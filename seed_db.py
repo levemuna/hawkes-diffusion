@@ -7,8 +7,16 @@
 Run once before launching the app:
 
     python seed_db.py
+
+The initial sweep ALWAYS uses mock data, regardless of the configured
+``DATA_SOURCE``. This keeps cold-start fast and predictable (~5 seconds)
+and avoids hitting external APIs before the user has even seen the
+dashboard. Live data comes in when the user clicks "Run Now" in the
+Daily Check section.
 """
 from __future__ import annotations
+
+import os
 
 import numpy as np
 
@@ -50,14 +58,23 @@ def seed() -> None:
     for kind, value, topic in default_targets():
         add_target(kind, value, topic)
 
-    # 3. Run the daily check once so the dashboard is non-empty
-    from daily_check import run_daily_check
-    summary = run_daily_check(verbose=False)
+    # 3. Initial daily-check sweep — force mock backend so cold-start is fast
+    #    and never depends on external services.
+    prior_data_source = os.environ.get("DATA_SOURCE")
+    os.environ["DATA_SOURCE"] = "mock"
+    try:
+        from daily_check import run_daily_check
+        summary = run_daily_check(verbose=False)
+    finally:
+        if prior_data_source is None:
+            os.environ.pop("DATA_SOURCE", None)
+        else:
+            os.environ["DATA_SOURCE"] = prior_data_source
 
     print(f"Seeded {DB_PATH}:")
     print(f"  - {N_PER_CLASS * 2} reference fingerprints")
     print(f"  - {len(default_targets())} monitored targets")
-    print(f"  - {summary['posts_analyzed']} posts analyzed in initial sweep")
+    print(f"  - {summary['posts_analyzed']} posts analyzed in initial sweep (mock)")
     print(f"  - {summary['posts_flagged']} flagged as coordinated")
     print(f"  - {summary['replies_drafted']} reply drafts queued")
 
