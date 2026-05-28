@@ -206,6 +206,50 @@ def init_db(path: Path = DB_PATH) -> None:
     with db_connection(path) as conn:
         conn.executescript(SCHEMA)
         conn.commit()
+    ensure_schema_current(path)
+
+
+# Columns that may be missing on databases created by older code revisions.
+# Order matters only for readability; SQLite appends to the end either way.
+_EXPECTED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "analyses": [
+        ("topic", "TEXT"),
+        ("engager_ids", "TEXT"),
+        ("event_times_json", "TEXT"),
+    ],
+    "replies": [
+        ("evidence_json", "TEXT"),
+    ],
+}
+
+
+def ensure_schema_current(path: Path = DB_PATH) -> None:
+    """Add columns that exist in current schema but are missing on disk.
+
+    Idempotent. Called automatically by init_db and by the Streamlit bootstrap
+    so that an app deployed against a DB from an older revision auto-upgrades
+    instead of crashing on INSERT.
+    """
+    if not path.exists():
+        return
+    with db_connection(path) as conn:
+        for table, cols in _EXPECTED_COLUMNS.items():
+            try:
+                existing = {
+                    r["name"] for r in
+                    conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+            except sqlite3.OperationalError:
+                continue  # table doesn't exist yet — init_db will create it
+            for col_name, col_type in cols:
+                if col_name not in existing:
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # column added by a concurrent process
+        conn.commit()
 
 
 # ---------- Reference fingerprints ----------

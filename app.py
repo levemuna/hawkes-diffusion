@@ -34,6 +34,7 @@ from core import (
     add_target,
     compute_fingerprint,
     engager_network_stats,
+    ensure_schema_current,
     k_nearest_neighbors,
     list_analyses,
     list_replies,
@@ -61,6 +62,8 @@ st.set_page_config(
 # ---------- First-run bootstrap ----------
 # Streamlit Cloud uses an ephemeral filesystem; on cold start the reference DB
 # won't exist. Seed it once so the dashboard never lands on an empty state.
+# If the DB exists but was created by an older revision, auto-migrate the
+# schema so INSERTs against newly-added columns don't crash.
 if not DB_PATH.exists():
     boot = st.empty()
     with boot.container():
@@ -73,6 +76,8 @@ if not DB_PATH.exists():
             seed_db.seed()
     boot.empty()
     st.rerun()
+else:
+    ensure_schema_current()
 
 
 # ---------- Sidebar nav ----------
