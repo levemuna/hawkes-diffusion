@@ -3,7 +3,7 @@ numpy>=1.24
 pandas>=2.0
 plotly>=5.18
 requests>=2.31
+snowflake-connector-python>=3.7
 
-# Optional — install per chosen backend:
-#   DATA_SOURCE=scraping_browser  ->  uv pip install playwright
-#   DATA_SOURCE=snowflake         ->  uv pip install snowflake-connector-python
+# Optional — install locally if using Scraping Browser backend:
+#   uv pip install playwright

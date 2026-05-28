@@ -6,6 +6,7 @@ Launch:
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 
 import numpy as np
@@ -13,6 +14,19 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+# ---------- Streamlit Cloud secrets → env ----------
+# On Streamlit Cloud, credentials live in st.secrets (TOML) instead of .env.
+# Mirror them into os.environ BEFORE importing any backend client so that the
+# existing env-driven config in xpoz_client / snowflake_client / brightdata_client
+# works identically in both environments. Local .env values still win because
+# we use setdefault.
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, (str, int, float, bool)):
+            os.environ.setdefault(str(_k), str(_v))
+except (FileNotFoundError, AttributeError, Exception):
+    pass
 
 from core import (
     DB_PATH,
