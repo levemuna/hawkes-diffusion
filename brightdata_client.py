@@ -8,16 +8,15 @@ This is wired but not auto-activated. To go live:
     2. The Streamlit app will then call ``fetch_recent_posts_for_target`` and
        ``fetch_post_engagement`` instead of mock data.
 
-The BrightData Datasets API is asynchronous: you submit a "trigger" request
-and poll for the snapshot to become ready. We expose synchronous helpers
-that wait (with timeout) so callers don't need to know that detail.
+Uses BrightData's synchronous /scrape endpoint — submit inputs, get rows back
+in one round-trip. Avoids the snapshot-polling round-trip of /trigger so
+interactive UI calls return in seconds instead of minutes.
 
-Docs: https://docs.brightdata.com/api-reference/web-scraper-api/trigger-a-collection
+Docs: https://docs.brightdata.com/api-reference/web-scraper-api/scrape
 """
 from __future__ import annotations
 
 import os
-import time
 from typing import Iterable
 
 import numpy as np
@@ -28,8 +27,7 @@ import core
 
 BRIGHTDATA_API = "https://api.brightdata.com/datasets/v3"
 BRIGHTDATA_ROOT = "https://api.brightdata.com"
-DEFAULT_TIMEOUT_S = 120
-POLL_INTERVAL_S = 4
+DEFAULT_TIMEOUT_S = 180
 
 
 def _load_env() -> dict[str, str]:
@@ -66,44 +64,28 @@ def _auth_headers() -> dict[str, str]:
     }
 
 
-def _trigger_snapshot(inputs: list[dict]) -> str:
-    """Submit a collection job. Returns snapshot_id."""
+def _scrape(inputs: list[dict], timeout_s: int = DEFAULT_TIMEOUT_S) -> list[dict]:
+    """Sync collection: POST inputs, get the scraped rows back in one call."""
     r = requests.post(
-        f"{BRIGHTDATA_API}/trigger",
-        params={"dataset_id": DATASET_ID, "format": "json"},
+        f"{BRIGHTDATA_API}/scrape",
+        params={
+            "dataset_id": DATASET_ID,
+            "notify": "false",
+            "include_errors": "true",
+        },
         headers=_auth_headers(),
-        json=inputs,
-        timeout=30,
+        json={"input": inputs},
+        timeout=timeout_s,
     )
     r.raise_for_status()
     data = r.json()
-    snap = data.get("snapshot_id") or data.get("collection_id")
-    if not snap:
-        raise RuntimeError(f"No snapshot_id in BrightData response: {data}")
-    return snap
-
-
-def _wait_for_snapshot(snapshot_id: str, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[dict]:
-    """Poll until the snapshot is ready, then return the rows."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        r = requests.get(
-            f"{BRIGHTDATA_API}/snapshot/{snapshot_id}",
-            params={"format": "json"},
-            headers=_auth_headers(),
-            timeout=30,
-        )
-        if r.status_code == 200:
-            try:
-                return r.json()
-            except ValueError:
-                pass
-        elif r.status_code in (202, 204):
-            pass  # still running
-        else:
-            r.raise_for_status()
-        time.sleep(POLL_INTERVAL_S)
-    raise TimeoutError(f"Snapshot {snapshot_id} not ready after {timeout_s}s")
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        rows = data.get("data") or data.get("results") or []
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict) and not row.get("error")]
 
 
 def _row_to_fetched_post(row: dict) -> FetchedPost:
@@ -164,8 +146,7 @@ def fetch_post(url: str, timeout_s: int = DEFAULT_TIMEOUT_S) -> FetchedPost | No
     """Fetch a single post by URL via BrightData."""
     if not IS_LIVE:
         return None
-    snap = _trigger_snapshot([{"url": url}])
-    rows = _wait_for_snapshot(snap, timeout_s=timeout_s)
+    rows = _scrape([{"url": url}], timeout_s=timeout_s)
     if not rows:
         return None
     return _row_to_fetched_post(rows[0])
@@ -189,9 +170,8 @@ def fetch_recent_for_target(
         inputs = [{"user_name": handle, "num_of_posts": limit}]
     else:
         return []
-    snap = _trigger_snapshot(inputs)
-    rows = _wait_for_snapshot(snap, timeout_s=timeout_s)
-    return [_row_to_fetched_post(r) for r in (rows or [])]
+    rows = _scrape(inputs, timeout_s=timeout_s)
+    return [_row_to_fetched_post(r) for r in rows]
 
 
 def find_similar_posts(url: str, n: int = 5,
