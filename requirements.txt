@@ -4,6 +4,4 @@ pandas>=2.0
 plotly>=5.18
 requests>=2.31
 snowflake-connector-python>=3.7
-
-# Optional — install locally if using Scraping Browser backend:
-#   uv pip install playwright
+playwright>=1.40
