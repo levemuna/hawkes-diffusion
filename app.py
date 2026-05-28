@@ -115,8 +115,18 @@ with st.sidebar:
     elif ds == "snowflake":
         st.success("Data source: **Snowflake (live)**")
         st.caption("BrightData data exchange via SQL.")
+        st.caption(
+            "Note: aggregate counts only — `burstiness` and "
+            "`peak_velocity_per_min` are synthesized from a uniform "
+            "back-fill. Real per-event timestamps need `scraping_browser`."
+        )
     elif ds == "brightdata":
         st.success("Data source: **BrightData REST (live)**")
+        st.caption(
+            "Sync `/scrape` endpoint. Aggregate counts only — `burstiness` "
+            "and `peak_velocity_per_min` are synthesized from a uniform "
+            "back-fill. Real per-event timestamps need `scraping_browser`."
+        )
     else:
         st.warning("Data source: **MOCK**")
         st.caption("Set `DATA_SOURCE` in `.env` to `scraping_browser`, `snowflake`, or `brightdata` to go live.")
