@@ -256,6 +256,43 @@ def load_reference(
     return feats, labels
 
 
+def k_nearest_neighbors(
+    query: np.ndarray, k: int = 5, label: str = "organic",
+    path: Path = DB_PATH,
+) -> list[dict]:
+    """Return the K nearest reference fingerprints from a given label cluster.
+
+    Each item: {distance, label, raw_features (5-tuple), normalized (5-tuple)}.
+    Distances are in the standardized space (same as nearest_cluster uses).
+    """
+    all_feats, all_labels = load_reference(path=path)
+    if all_feats.shape[0] == 0:
+        return []
+    mu = all_feats.mean(axis=0)
+    sd = all_feats.std(axis=0) + 1e-9
+    norm_all = (all_feats - mu) / sd
+    norm_q = (query - mu) / sd
+
+    mask = np.array([l == label for l in all_labels])
+    if mask.sum() == 0:
+        return []
+    norm_subset = norm_all[mask]
+    raw_subset = all_feats[mask]
+    dists = np.linalg.norm(norm_subset - norm_q, axis=1)
+    order = np.argsort(dists)[:k]
+
+    return [
+        {
+            "rank": int(rank + 1),
+            "distance": float(dists[idx]),
+            "label": label,
+            "raw_features": tuple(float(x) for x in raw_subset[idx]),
+            "normalized": tuple(float(x) for x in norm_subset[idx]),
+        }
+        for rank, idx in enumerate(order)
+    ]
+
+
 def nearest_cluster(query: np.ndarray, k: int = 5, path: Path = DB_PATH) -> dict:
     all_feats, all_labels = load_reference(path=path)
     if all_feats.shape[0] == 0:

@@ -34,6 +34,7 @@ from core import (
     add_target,
     compute_fingerprint,
     engager_network_stats,
+    k_nearest_neighbors,
     list_analyses,
     list_replies,
     list_targets,
@@ -77,6 +78,7 @@ if not DB_PATH.exists():
 # ---------- Sidebar nav ----------
 SECTIONS = [
     "Overview",
+    "Methodology",
     "Analyze Post",
     "Detections",
     "Forensics",
@@ -142,7 +144,13 @@ def analyses_df(verdict=None, topic=None, limit=500) -> pd.DataFrame:
 # =========================================================
 
 def render_overview() -> None:
-    st.title("Overview")
+    st.title("Diffusion Fingerprint — Overview")
+    st.markdown(
+        "**Content-agnostic detection.** We never read the post. "
+        "We measure *how* it spreads — the timing, velocity, and engager mix — "
+        "and flag patterns that diverge from organic virality. "
+        "See **Methodology** for the math."
+    )
     st.caption(
         "Last 7 days of detections across your monitored nutrition targets, "
         "with the most recent flags surfaced for quick triage."
@@ -154,7 +162,7 @@ def render_overview() -> None:
                 "run **Daily Check → Run Now** to populate the dashboard.")
         return
 
-    now = pd.Timestamp.utcnow().tz_localize(None)
+    now = pd.Timestamp.now("UTC").tz_localize(None)
     last_7 = df[df["analyzed_at"] >= now - pd.Timedelta(days=7)]
     last_24 = df[df["analyzed_at"] >= now - pd.Timedelta(hours=24)]
 
@@ -231,6 +239,102 @@ def render_overview() -> None:
                 ),
             },
         )
+
+
+# =========================================================
+# Section: Methodology
+# =========================================================
+
+def render_methodology() -> None:
+    st.title("Methodology")
+
+    st.markdown(
+        "## The bet\n"
+        "Coordinated amplification campaigns can fake **what a post says** — "
+        "wording, emoji, hashtags, even author identity. They cannot fake "
+        "**how the post spreads** without leaving a statistical signature. "
+        "Bot squads activate in tight time windows. Their accounts skew young. "
+        "Their engagement bursts decay faster than organic interest does. "
+        "**We never read the post.** We fingerprint the diffusion."
+    )
+
+    st.markdown("## Pipeline")
+    st.markdown(
+        "1. **Ingest** — pull a post's engagement timeline (likes, reposts, "
+        "replies with their timestamps) and engager metadata (account age) "
+        "from one of the configured backends.\n"
+        "2. **Fingerprint** — compress the cascade into a 5-feature vector.\n"
+        "3. **KNN match** — standardize against reference clusters of known "
+        "organic and known coordinated cascades, then compute mean distance "
+        "to the **K=5 nearest neighbors** in each cluster.\n"
+        "4. **Verdict** — assign to whichever cluster sits closer. "
+        "Margin = `1 − min/max` of the two distances."
+    )
+
+    st.markdown("## The 5 features")
+    feat_table = pd.DataFrame([
+        {"feature": "time_to_peak_hours",
+         "what it measures": "When peak engagement happened, hours after post",
+         "organic pattern": "1–6 hours",
+         "coordinated pattern": "minutes, or multiple bursts"},
+        {"feature": "burstiness",
+         "what it measures": "Goh & Barabási variance of inter-arrival times",
+         "organic pattern": "≈ 0 (near-Poisson)",
+         "coordinated pattern": "> 0.4 (heavy clustering)"},
+        {"feature": "decay_exponent",
+         "what it measures": "Power-law slope of velocity after peak",
+         "organic pattern": "shallow (long tail)",
+         "coordinated pattern": "steep (sudden drop)"},
+        {"feature": "peak_velocity_per_min",
+         "what it measures": "Maximum engagement events per minute",
+         "organic pattern": "< 10 / min",
+         "coordinated pattern": "20+ / min, sometimes 100s"},
+        {"feature": "avg_account_age_days",
+         "what it measures": "Median engager account age",
+         "organic pattern": "> 300 days",
+         "coordinated pattern": "< 90 days, often < 30"},
+    ])
+    st.dataframe(feat_table, use_container_width=True, hide_index=True)
+
+    st.markdown("## The reference space")
+    st.caption(
+        "Each dot is a known cascade. Axes are standardized time-to-peak and "
+        "burstiness. The two clusters are visibly separable even on 2 of the "
+        "5 dimensions — KNN uses all five at once."
+    )
+    all_feats, all_labels = load_reference()
+    if all_feats.shape[0] > 0:
+        mu = all_feats.mean(axis=0)
+        sd = all_feats.std(axis=0) + 1e-9
+        norm = (all_feats - mu) / sd
+        df_ref = pd.DataFrame({
+            "time_to_peak (std)": norm[:, 0],
+            "burstiness (std)": norm[:, 1],
+            "label": all_labels,
+        })
+        fig = px.scatter(
+            df_ref, x="time_to_peak (std)", y="burstiness (std)",
+            color="label", color_discrete_map=VERDICT_COLOR,
+            opacity=0.7, height=420,
+        )
+        fig.update_layout(template="plotly_dark",
+                          margin=dict(t=10, b=40, l=40, r=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("## Why this isn't content moderation")
+    st.markdown(
+        "Content moderation says: *this post is misinformation*. "
+        "It needs a ground-truth judgment on the claim — slow, expensive, "
+        "language-specific, ideologically charged.\n\n"
+        "Diffusion fingerprinting says: *this post is being pushed by "
+        "something that doesn't look like organic interest*. "
+        "It is **claim-agnostic and language-agnostic**. "
+        "A keto recipe and a flat-earth meme show the same fingerprint when "
+        "the same bot squad pushes them.\n\n"
+        "The output is not 'true vs false'. It is **organic vs coordinated**. "
+        "Action — labeling, deboosting, alerting, reply-drafting — is left to "
+        "the human reviewer in the **Reply Queue**."
+    )
 
 
 # =========================================================
@@ -311,8 +415,8 @@ def render_analyze() -> None:
             f"d(org)=**{org_d:.2f}** vs d(coord)=**{coord_d:.2f}**"
         )
 
-    sub_map, sub_feat, sub_rel = st.tabs(
-        ["Fingerprint Map", "Feature Breakdown", "Related Posts"]
+    sub_map, sub_feat, sub_knn, sub_rel = st.tabs(
+        ["Fingerprint Map", "Feature Breakdown", "K Nearest Neighbors", "Related Posts"]
     )
 
     with sub_map:
@@ -360,6 +464,53 @@ def render_analyze() -> None:
         fig2.update_layout(xaxis_tickangle=-25)
         st.plotly_chart(fig2, use_container_width=True)
         st.dataframe(df_cmp, use_container_width=True, hide_index=True)
+
+    with sub_knn:
+        st.subheader("K nearest reference cascades")
+        st.caption(
+            "These are the **actual reference fingerprints** the KNN matched "
+            "your post against. Distance is in the standardized 5-feature "
+            "space. The verdict is whichever cluster's K=5 mean distance is "
+            "smaller — the side with closer green or closer red rows wins."
+        )
+        kc1, kc2 = st.columns(2)
+        with kc1:
+            st.markdown("**Closest organic neighbors**")
+            org_nn = k_nearest_neighbors(input_fp, k=5, label="organic")
+            if org_nn:
+                df_org = pd.DataFrame([
+                    {"#": nn["rank"], "distance": round(nn["distance"], 3),
+                     **dict(zip(FEATURE_NAMES, nn["raw_features"]))}
+                    for nn in org_nn
+                ])
+                st.dataframe(df_org, use_container_width=True, hide_index=True)
+                st.caption(f"Mean distance: **{np.mean([nn['distance'] for nn in org_nn]):.3f}**")
+        with kc2:
+            st.markdown("**Closest coordinated neighbors**")
+            coord_nn = k_nearest_neighbors(input_fp, k=5, label="coordinated")
+            if coord_nn:
+                df_coord = pd.DataFrame([
+                    {"#": nn["rank"], "distance": round(nn["distance"], 3),
+                     **dict(zip(FEATURE_NAMES, nn["raw_features"]))}
+                    for nn in coord_nn
+                ])
+                st.dataframe(df_coord, use_container_width=True, hide_index=True)
+                st.caption(f"Mean distance: **{np.mean([nn['distance'] for nn in coord_nn]):.3f}**")
+
+        # Distance comparison bar
+        if org_nn and coord_nn:
+            df_dists = pd.DataFrame({
+                "rank": list(range(1, 6)) * 2,
+                "distance": [nn["distance"] for nn in org_nn] +
+                            [nn["distance"] for nn in coord_nn],
+                "cluster": ["organic"] * 5 + ["coordinated"] * 5,
+            })
+            fig = px.bar(df_dists, x="rank", y="distance", color="cluster",
+                         barmode="group", color_discrete_map=VERDICT_COLOR,
+                         height=300, title="Distance to each of the 5 nearest neighbors")
+            fig.update_layout(template="plotly_dark",
+                              margin=dict(t=40, b=40, l=40, r=10))
+            st.plotly_chart(fig, use_container_width=True)
 
     with sub_rel:
         rows = []
@@ -510,7 +661,7 @@ def render_forensics() -> None:
         topics_in_data = sorted(df["topic"].dropna().unique().tolist())
         topic_filter = st.multiselect("Topics", topics_in_data, default=[])
 
-    now = pd.Timestamp.utcnow().tz_localize(None)
+    now = pd.Timestamp.now("UTC").tz_localize(None)
     if time_window == "24h":
         df = df[df["analyzed_at"] >= now - pd.Timedelta(hours=24)]
     elif time_window == "7d":
@@ -689,7 +840,7 @@ def render_forensics() -> None:
     )
     full = analyses_df(limit=5000)
     if not full.empty:
-        now = pd.Timestamp.utcnow().tz_localize(None)
+        now = pd.Timestamp.now("UTC").tz_localize(None)
         prev = full[(full["analyzed_at"] >= now - pd.Timedelta(days=14)) &
                     (full["analyzed_at"] < now - pd.Timedelta(days=7))]
         curr = full[full["analyzed_at"] >= now - pd.Timedelta(days=7)]
@@ -1179,6 +1330,7 @@ def render_daily_check() -> None:
 # =========================================================
 RENDERERS = {
     "Overview": render_overview,
+    "Methodology": render_methodology,
     "Analyze Post": render_analyze,
     "Detections": render_detections,
     "Forensics": render_forensics,
