@@ -144,18 +144,66 @@ def analyses_df(verdict=None, topic=None, limit=500) -> pd.DataFrame:
 # =========================================================
 
 def render_overview() -> None:
-    st.title("Diffusion Fingerprint — Overview")
+    # ---------- 1. The story (emotional hook) ----------
+    st.title("When 'everyone is saying this' isn't true")
     st.markdown(
-        "**Content-agnostic detection.** We never read the post. "
-        "We measure *how* it spreads — the timing, velocity, and engager mix — "
-        "and flag patterns that diverge from organic virality. "
-        "See **Methodology** for the math."
+        "> A teenager scrolls X. In 20 minutes she sees fifty accounts "
+        "celebrating an extreme diet. To her, this is *what everyone is doing*. "
+        "She tries it. She doesn't know it was eight real people and a "
+        "coordinated network of fresh accounts pushing on schedule."
     )
-    st.caption(
-        "Last 7 days of detections across your monitored nutrition targets, "
-        "with the most recent flags surfaced for quick triage."
+    st.markdown(
+        "Nutrition is one of the most weaponized verticals on social media — "
+        "vulnerable audiences (teenagers, sick people, parents), high monetary "
+        "incentives (supplement and alt-health markets), and mostly "
+        "speech-protected so platforms don't intervene. **The harm is real "
+        "and current tools don't catch it.**"
     )
 
+    st.markdown("---")
+
+    # ---------- 2. The gap ----------
+    st.markdown("## The gap")
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        st.error("**Content moderation needs falsity.**\n\n"
+                 "'I personally found carnivore diet improved my X' is "
+                 "unfalsifiable. Pushed by 200 fresh accounts, it becomes a "
+                 "movement. Platforms can't act on legal speech.")
+    with g2:
+        st.error("**Reports take weeks. Campaigns last days.**\n\n"
+                 "Coordinated-inauthentic-behavior reports run through "
+                 "platform integrity teams. By the time something is "
+                 "actioned, the campaign has moved on.")
+    with g3:
+        st.error("**Users see counts, not engagers.**\n\n"
+                 "'42K likes' looks like 42K people. Nobody surfaces "
+                 "*who* engaged — their account age, their other activity, "
+                 "their overlap with known networks.")
+
+    st.markdown("---")
+
+    # ---------- 3. The wedge ----------
+    st.markdown("## Our wedge")
+    st.success(
+        "**We don't judge content. We measure spread.** "
+        "A bot squad has a statistical signature in *timing* and "
+        "*engager profile* that survives no matter what they say. "
+        "A keto recipe and a flat-earth meme show the same fingerprint "
+        "when the same network pushes them. Output: organic vs coordinated, "
+        "not true vs false. A human reviewer decides what to do with the flag."
+    )
+    st.caption(
+        "**Why nutrition first**: highest-leverage proving ground — large "
+        "volume, vulnerable users, clear bad actors, low platform "
+        "intervention. If it works here, the same pipeline works on "
+        "financial scams, political astroturfing, and health misinformation."
+    )
+
+    st.markdown("---")
+
+    # ---------- 4. Live proof ----------
+    st.markdown("## Working proof — last 7 days")
     df = analyses_df(limit=2000)
     if df.empty:
         st.info("No analyses yet. Try **Analyze Post** with any URL, or "
@@ -166,18 +214,17 @@ def render_overview() -> None:
     last_7 = df[df["analyzed_at"] >= now - pd.Timedelta(days=7)]
     last_24 = df[df["analyzed_at"] >= now - pd.Timedelta(hours=24)]
 
-    # KPI row
     n_total_7d = len(last_7)
     n_flag_7d = int((last_7["verdict"] == "coordinated").sum())
     n_flag_24h = int((last_24["verdict"] == "coordinated").sum())
     pending = len(list_replies(status="pending"))
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Analyzed (7d)", n_total_7d)
-    k2.metric("Flagged (7d)", n_flag_7d,
-              f"{(n_flag_7d/max(n_total_7d,1))*100:.0f}% rate")
-    k3.metric("Flagged (24h)", n_flag_24h)
-    k4.metric("Pending replies", pending)
+    k1.metric("Posts analyzed", n_total_7d)
+    k2.metric("Coordinated detected", n_flag_7d,
+              f"{(n_flag_7d/max(n_total_7d,1))*100:.0f}% of volume")
+    k3.metric("Detected last 24h", n_flag_24h)
+    k4.metric("Reply drafts queued", pending)
 
     st.markdown("---")
 
