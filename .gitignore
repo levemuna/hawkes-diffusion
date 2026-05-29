@@ -27,3 +27,10 @@ streamlit.err.log
 
 # Local diagnostic scripts (not for distribution)
 _env_check.py
+
+# BrightData SSL certificate bundles (downloaded locally; not project files)
+*.crt
+*.pem
+New SSL certifcate*/
+Old Certficate*/
+README - USE THE NEW CERTIFICATE.txt
