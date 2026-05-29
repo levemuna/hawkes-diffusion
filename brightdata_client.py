@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Iterable
 
 import numpy as np
@@ -29,6 +30,15 @@ import core
 BRIGHTDATA_API = "https://api.brightdata.com/datasets/v3"
 BRIGHTDATA_ROOT = "https://api.brightdata.com"
 DEFAULT_TIMEOUT_S = 180
+POLL_INTERVAL_S = 4
+
+# Curated cache of pre-scraped real posts. BrightData's on-demand /scrape does
+# a *live* scrape that can take 5+ minutes per cold URL — unusable for an
+# interactive dashboard. We pre-fetch a set of real posts into this committed
+# JSON file (via prewarm.py) so Analyze Post returns real BrightData data
+# instantly, both locally and on Streamlit Cloud. A cache hit is real data,
+# just fetched ahead of time. Cache misses fall through to a live scrape.
+POST_CACHE_PATH = os.path.join(os.path.dirname(__file__), "demo_posts.json")
 
 
 def _load_env() -> dict[str, str]:
@@ -65,8 +75,60 @@ def _auth_headers() -> dict[str, str]:
     }
 
 
+def _parse_jsonl(text: str) -> list[dict]:
+    """Parse a JSONL body (one JSON object per line) into dict rows.
+    Drops blank lines, unparseable lines, and rows carrying an 'error'."""
+    rows: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and not obj.get("error"):
+            rows.append(obj)
+    return rows
+
+
+def _poll_snapshot(snapshot_id: str, timeout_s: int) -> list[dict]:
+    """Poll /snapshot/<id> until rows are ready or timeout. Returns data rows."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        r = requests.get(
+            f"{BRIGHTDATA_API}/snapshot/{snapshot_id}",
+            params={"format": "json"},
+            headers=_auth_headers(),
+            timeout=30,
+        )
+        if r.status_code == 200:
+            # Snapshot endpoint may return JSON array or JSONL.
+            try:
+                data = r.json()
+                if isinstance(data, list):
+                    return [d for d in data
+                            if isinstance(d, dict) and not d.get("error")]
+            except ValueError:
+                pass
+            rows = _parse_jsonl(r.text)
+            if rows:
+                return rows
+        elif r.status_code not in (202, 204):
+            r.raise_for_status()
+        time.sleep(POLL_INTERVAL_S)
+    raise TimeoutError(f"Snapshot {snapshot_id} not ready after {timeout_s}s")
+
+
 def _scrape(inputs: list[dict], timeout_s: int = DEFAULT_TIMEOUT_S) -> list[dict]:
-    """Sync collection: POST inputs, get the scraped rows back in one call."""
+    """Collect rows for the given inputs.
+
+    Uses the synchronous /scrape endpoint, which usually returns the scraped
+    rows directly as JSONL. Under load, BrightData instead queues the job and
+    returns ``{"snapshot_id": ...}`` — we detect that and fall back to polling
+    /snapshot/<id> so the caller always gets real rows (or a TimeoutError),
+    never a bogus stub row.
+    """
     r = requests.post(
         f"{BRIGHTDATA_API}/scrape",
         params={
@@ -79,20 +141,12 @@ def _scrape(inputs: list[dict], timeout_s: int = DEFAULT_TIMEOUT_S) -> list[dict
         timeout=timeout_s,
     )
     r.raise_for_status()
-    # BrightData's /scrape returns JSONL (one JSON object per line), not JSON.
-    # A single-row response is valid JSON too, but multi-row isn't — parse line
-    # by line in all cases so both shapes work.
-    rows: list[dict] = []
-    for line in r.text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and not obj.get("error"):
-            rows.append(obj)
+    rows = _parse_jsonl(r.text)
+
+    # Async fallback: a single stub row carrying a snapshot_id (and no post
+    # fields) means the job was queued, not completed inline. Poll for it.
+    if len(rows) == 1 and rows[0].get("snapshot_id") and "url" not in rows[0]:
+        return _poll_snapshot(rows[0]["snapshot_id"], timeout_s)
     return rows
 
 
@@ -149,19 +203,68 @@ def _row_to_fetched_post(row: dict) -> FetchedPost:
     )
 
 
+# ---------- Pre-scraped post cache ----------
+
+def _load_cache() -> dict[str, dict]:
+    """Load the curated URL→row cache. Returns {} if missing/unreadable."""
+    if not os.path.exists(POST_CACHE_PATH):
+        return {}
+    try:
+        with open(POST_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(cache: dict[str, dict]) -> None:
+    try:
+        with open(POST_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def cache_put(url: str, row: dict) -> None:
+    """Store a real scraped row under its URL for instant future fetches."""
+    cache = _load_cache()
+    cache[url] = row
+    _save_cache(cache)
+
+
 # ---------- Public API ----------
 
 def is_live() -> bool:
     return IS_LIVE
 
 
+def cached_urls() -> list[str]:
+    """URLs available for instant real-data analysis (pre-scraped)."""
+    return list(_load_cache().keys())
+
+
 def fetch_post(url: str, timeout_s: int = DEFAULT_TIMEOUT_S) -> FetchedPost | None:
-    """Fetch a single post by URL via BrightData."""
+    """Fetch a single post by URL via BrightData.
+
+    Returns None on any failure (timeout, network, queued-but-not-ready) so the
+    caller in xpoz_client can fall back to mock gracefully instead of crashing
+    mid-demo. A cold-cache URL that BrightData queues asynchronously may exceed
+    the timeout — pre-warm demo URLs to keep this on the fast inline path.
+    """
     if not IS_LIVE:
         return None
-    rows = _scrape([{"url": url}], timeout_s=timeout_s)
+    # Cache hit: real data, pre-fetched — return instantly.
+    cache = _load_cache()
+    if url in cache:
+        return _row_to_fetched_post(cache[url])
+    # Cache miss: live scrape (may be slow / time out → graceful None).
+    try:
+        rows = _scrape([{"url": url}], timeout_s=timeout_s)
+    except (requests.RequestException, TimeoutError):
+        return None
     if not rows:
         return None
+    cache_put(url, rows[0])  # remember for next time
     return _row_to_fetched_post(rows[0])
 
 
@@ -183,7 +286,10 @@ def fetch_recent_for_target(
         inputs = [{"user_name": handle, "num_of_posts": limit}]
     else:
         return []
-    rows = _scrape(inputs, timeout_s=timeout_s)
+    try:
+        rows = _scrape(inputs, timeout_s=timeout_s)
+    except (requests.RequestException, TimeoutError):
+        return []
     return [_row_to_fetched_post(r) for r in rows]
 
 

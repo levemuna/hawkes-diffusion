@@ -27,3 +27,10 @@ streamlit.err.log
 
 # Local diagnostic scripts (not for distribution)
 _env_check.py
+
+# BrightData SSL certificate bundle (local proxy config — never commit)
+New SSL certifcate*/
+Old Certficate*/
+README - USE THE NEW CERTIFICATE.txt
+*.crt
+*BrightData_SSL_Certificate_Installer*

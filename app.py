@@ -48,6 +48,12 @@ from core import (
     update_reply,
 )
 from replies import build_evidence, draft_reply
+from signals import (
+    compute_engagement_signals,
+    concern_score,
+    extract_row,
+    signal_flags,
+)
 from topics import NUTRITION_TOPICS, all_topic_keys, classify_text
 from xpoz_client import fetch_post_and_neighbors, get_data_source, is_mock
 
@@ -613,6 +619,49 @@ def render_analyze() -> None:
                 "Avg engager age (d)": round(float(fp[4]), 1),
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ---------- Real engagement signals (live data, no synthesis) ----------
+    sig = compute_engagement_signals(extract_row(input_post.meta))
+    if sig is not None:
+        st.markdown("---")
+        st.subheader("Real engagement signals")
+        st.caption(
+            "Computed **purely from the post's real numbers** (engagement "
+            "composition + author account structure) — independent of the "
+            "Hawkes fingerprint above, which relies on a synthesized timeline "
+            "in REST mode. A genuinely viral post draws *conversation* and "
+            "engagement proportionate to reach; a coordinated push pumps "
+            "*spread* with little discussion. Heuristic flags, not a verdict."
+        )
+
+        flags = signal_flags(sig)
+        score = concern_score(flags)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total engagement", f"{sig['total_engagement']:,}")
+        m2.metric("Reply share", f"{sig['reply_share']*100:.1f}%")
+        m3.metric("Repost share", f"{sig['repost_share']*100:.1f}%")
+        ffr = sig["follower_following_ratio"]
+        m4.metric("Follower/following", f"{ffr:,.0f}" if ffr is not None else "—")
+
+        st.progress(
+            score,
+            text=f"Composite authenticity concern: {score*100:.0f}% "
+                 "(heuristic — higher = more amplification-like)",
+        )
+
+        _ICON = {"concern": "🔴", "watch": "🟡", "ok": "🟢"}
+        for f in flags:
+            st.markdown(f"{_ICON.get(f['level'], '•')} **{f['label']}** — {f['detail']}")
+
+        with st.expander("Raw real fields used"):
+            st.json(sig["raw"])
+    elif not is_mock():
+        st.markdown("---")
+        st.info(
+            "No real engagement fields available for this post from the "
+            "current backend — showing the diffusion fingerprint only."
+        )
 
 
 # =========================================================
